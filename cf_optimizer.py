@@ -11,9 +11,9 @@ import ipaddress
 import os
 import random
 import re
+import sys
 import time
 import argparse
-import sys
 from dataclasses import dataclass
 from typing import Optional
 
@@ -27,6 +27,8 @@ OUT_FULL = "results_full.txt"
 OUT_IPV4 = "best_ipv4.txt"
 OUT_IPV6 = "best_ipv6.txt"
 OUT_ALL  = "best_all.txt"
+
+PROGRESS_EVERY = 100  # 每 N 个更新一次进度
 
 
 @dataclass
@@ -52,9 +54,7 @@ def parse_trace(text: str) -> dict:
 
 
 def _random_ip_from_net(net: ipaddress.IPv4Network | ipaddress.IPv6Network) -> str:
-    """从 CIDR 网络中随机选一个可用主机 IP（不枚举所有主机）"""
     num_hosts = net.num_addresses
-    # 跳过网络地址(0)和广播地址(-1，仅IPv4)
     if net.version == 4 and num_hosts >= 2:
         offset = random.randint(1, num_hosts - 2)
     elif num_hosts >= 2:
@@ -65,7 +65,6 @@ def _random_ip_from_net(net: ipaddress.IPv4Network | ipaddress.IPv6Network) -> s
 
 
 def load_ips(filepath: str, per_range: int = 1) -> list[str]:
-    """从文件加载 IP（单IP 直用，CIDR 随机抽取 per_range 个）"""
     ips = []
     with open(filepath) as f:
         for line in f:
@@ -138,18 +137,61 @@ async def test_ip(ip: str, timeout: float = 5.0) -> Result:
 
 
 async def run_tests(ips: list[str], concurrency: int = 50, timeout: float = 5.0) -> list[Result]:
+    """并发测试，流式收集结果并实时显示进度和当前最优"""
     sem = asyncio.Semaphore(concurrency)
+    total = len(ips)
 
     async def bounded_test(ip):
         async with sem:
             return await test_ip(ip, timeout)
 
-    print(f"🚀 开始测试 {len(ips)} 个 IP（并发={concurrency} 超时={timeout}s）...")
+    print(f"🚀 开始测试 {total} 个 IP（并发={concurrency} 超时={timeout}s）...\n")
+
     t0 = time.monotonic()
-    tasks = [bounded_test(ip) for ip in ips]
-    results = await asyncio.gather(*tasks)
+    tasks = [asyncio.ensure_future(bounded_test(ip)) for ip in ips]
+
+    results: list[Result] = []
+    done_count = 0
+    ok_count = 0
+    next_milestone = PROGRESS_EVERY
+
+    for coro in asyncio.as_completed(tasks):
+        r = await coro
+        results.append(r)
+        done_count += 1
+        if r.error is None:
+            ok_count += 1
+
+        # 每 N 个打印一次进度 + 当前 top 5
+        if done_count >= next_milestone or done_count == total:
+            pct = done_count * 100 // total
+            bar_len = 20
+            filled = pct * bar_len // 100
+            bar = "█" * filled + "░" * (bar_len - filled)
+            elapsed = time.monotonic() - t0
+            eta = elapsed / done_count * (total - done_count) if done_count > 0 else 0
+
+            # 当前 top 5
+            ok_results = sorted(
+                [x for x in results if x.error is None],
+                key=lambda x: x.latency_ms
+            )[:5]
+            tops = " | ".join(
+                f"{r.latency_ms:.0f}ms({r.colo})" for r in ok_results
+            )
+
+            line = (f"\r[{done_count}/{total}] {bar} {pct}% "
+                    f"✅{ok_count} ❌{done_count-ok_count} "
+                    f"⏱{elapsed:.0f}s ETA{eta:.0f}s "
+                    f"| 🏆 {tops}")
+
+            sys.stdout.write(line.ljust(120))
+            sys.stdout.flush()
+
+            next_milestone = ((done_count // PROGRESS_EVERY) + 1) * PROGRESS_EVERY
+
     elapsed = time.monotonic() - t0
-    print(f"✅ 测试完成，耗时 {elapsed:.1f}s\n")
+    print(f"\n\n✅ 测试完成，耗时 {elapsed:.1f}s\n")
 
     results.sort(key=lambda r: (r.error is not None, r.latency_ms))
     return results
@@ -191,7 +233,6 @@ def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
     v4 = [r for r in ok if not r.is_v6()]
     v6 = [r for r in ok if r.is_v6()]
 
-    # 1) results_full.txt
     path_full = os.path.join(out_dir, OUT_FULL)
     with open(path_full, "w") as f:
         f.write(f"Cloudflare IP Optimizer — 完整测试结果\n")
@@ -209,21 +250,18 @@ def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
                 f.write(f"{r.ip:<42} {r.error}\n")
     print(f"📄 {path_full}  ({len(ok)} 成功 + {len(err)} 失败)")
 
-    # 2) best_ipv4.txt
     path_v4 = os.path.join(out_dir, OUT_IPV4)
     with open(path_v4, "w") as f:
         for r in v4[:top_n]:
             f.write(f"{r.ip}\n")
     print(f"📄 {path_v4}  ({min(len(v4), top_n)} 个 IPv4)")
 
-    # 3) best_ipv6.txt
     path_v6 = os.path.join(out_dir, OUT_IPV6)
     with open(path_v6, "w") as f:
         for r in v6[:top_n]:
             f.write(f"{r.ip}\n")
     print(f"📄 {path_v6}  ({min(len(v6), top_n)} 个 IPv6)")
 
-    # 4) best_all.txt
     path_all = os.path.join(out_dir, OUT_ALL)
     with open(path_all, "w") as f:
         for r in ok[:top_n]:
