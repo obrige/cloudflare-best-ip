@@ -1,0 +1,2 @@
+# 仅使用 Python 标准库 + curl，无需额外 pip 包
+# Python >= 3.8 即可运行
