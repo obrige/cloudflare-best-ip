@@ -12,6 +12,8 @@ https://cdnjs.cloudflare.com/cdn-cgi/trace
 
 解析返回的 `colo`（数据中心代码，如 NRT/ICN/HKG/SJC）和 `loc`（地区），同时精确测量 **HTTPS 请求延迟（含 TLS 握手 + 数据传输）**。
 
+运行后自动生成 4 个输出文件。
+
 ## 依赖
 
 - Python 3.8+
@@ -27,6 +29,17 @@ https://cdnjs.cloudflare.com/cdn-cgi/trace
 | `requirements.txt` | 依赖说明 |
 
 程序不自带 IP —— 全部从 `ipv4.txt` 和 `ipv6.txt` 读取。
+
+## 输出文件
+
+运行后自动生成 4 个文件：
+
+| 文件 | 内容 |
+|------|------|
+| `results_full.txt` | 完整结果表（所有 IP，含 colo / 延迟 / 状态码） |
+| `best_ipv4.txt` | 最优 IPv4（每行一个 IP，按延迟升序） |
+| `best_ipv6.txt` | 最优 IPv6（每行一个 IP，按延迟升序） |
+| `best_all.txt` | 最优混合（每行一个 IP，按延迟升序） |
 
 ## 使用方法
 
@@ -51,7 +64,7 @@ python cf_optimizer.py --no-ipv4
 ### 4. 常用参数
 
 ```bash
-python cf_optimizer.py -c 50 -t 3 -n 20 --export best_ips.txt
+python cf_optimizer.py -c 50 -t 3 -n 50 -o ./output
 ```
 
 | 参数 | 说明 | 默认 |
@@ -62,8 +75,8 @@ python cf_optimizer.py -c 50 -t 3 -n 20 --export best_ips.txt
 | `--no-ipv6` | 跳过 IPv6 | - |
 | `-c` / `--concurrency` | 并发数量 | 20 |
 | `-t` / `--timeout` | 超时(秒) | 5 |
-| `-n` / `--top` | 显示最优 N 个 | 30 |
-| `--export` | 导出最优 IP 到文件 | - |
+| `-n` / `--top` | 最优 IP 数量 | 30 |
+| `-o` / `--out-dir` | 输出目录 | `.` |
 | `--sort-by-colo` | 按数据中心分组输出 | - |
 
 ### 5. 示例输出
@@ -80,13 +93,18 @@ IP                                          延迟    Colo    Loc    状态码
 104.17.0.1                                12.3ms    NRT     JP     200
 104.16.0.1                                15.7ms    ICN     KR     200
 2606:4700:90c5::1                          18.2ms    HKG     HK     200
-104.18.0.1                                23.1ms    SJC     US     200
 ...
 
 📊 各 Colo 最低延迟:
    NRT  最低=12.3ms  平均=18.7ms  (样本=248)
    ICN  最低=15.7ms  平均=22.1ms  (样本=195)
    HKG  最低=18.2ms  平均=25.4ms  (样本=210)
+
+📁 输出文件:
+📄 results_full.txt  (7980 成功 + 150 失败)
+📄 best_ipv4.txt     (30 个 IPv4)
+📄 best_ipv6.txt     (30 个 IPv6)
+📄 best_all.txt      (30 个混合)
 ```
 
 ## 自定义 IP 列表
