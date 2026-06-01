@@ -2,7 +2,7 @@
 """
 Cloudflare IP Optimizer — 通过 https://cdnjs.cloudflare.com/cdn-cgi/trace 测试HTTPS延迟和 colo
 IP 列表全部来自外部文件：ipv4.txt / ipv6.txt
-输出四个文件：
+输出四个文件到 results/ 目录：
   results_full.txt  — 完整结果表（所有IP，含colo/loc/延迟/状态码）
   best_ipv4.txt     — 最优 IPv4（每行一个IP）
   best_ipv6.txt     — 最优 IPv6（每行一个IP）
@@ -23,6 +23,7 @@ HOST = "cdnjs.cloudflare.com"
 TRACE_URL = f"https://{HOST}/cdn-cgi/trace"
 DEFAULT_IPV4 = "ipv4.txt"
 DEFAULT_IPV6 = "ipv6.txt"
+DEFAULT_OUT_DIR = "results"
 
 OUT_FULL   = "results_full.txt"
 OUT_IPV4   = "best_ipv4.txt"
@@ -172,8 +173,9 @@ def print_results(results: list[Result], top_n: int = 100):
             print(f"   {colo:>6}  最低={min(lats):.1f}ms  平均={sum(lats)/len(lats):.1f}ms  (样本={len(lats)})")
 
 
-def write_outputs(results: list[Result], top_n: int, out_dir: str = "."):
-    """写入四个输出文件"""
+def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
+    """写入四个输出文件到 out_dir"""
+    os.makedirs(out_dir, exist_ok=True)
     ok = [r for r in results if r.error is None]
     err = [r for r in results if r.error is not None]
 
@@ -236,8 +238,8 @@ def main():
                         help="超时秒数（默认 5）")
     parser.add_argument("-n", "--top", type=int, default=100,
                         help="显示及导出的最优 IP 数量（默认 100）")
-    parser.add_argument("-o", "--out-dir", default=".",
-                        help="输出目录（默认当前目录）")
+    parser.add_argument("-o", "--out-dir", default=DEFAULT_OUT_DIR,
+                        help=f"输出目录（默认 {DEFAULT_OUT_DIR}/）")
     parser.add_argument("--sort-by-colo", action="store_true",
                         help="按 colo 分组输出")
     args = parser.parse_args()
@@ -282,7 +284,7 @@ def main():
         print_results(results, args.top)
 
     # 生成四个输出文件
-    print(f"\n📁 输出文件:")
+    print(f"\n📁 输出文件 -> {args.out_dir}/ :")
     write_outputs(results, args.top, args.out_dir)
 
 
