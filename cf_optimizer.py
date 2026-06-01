@@ -28,7 +28,7 @@ OUT_IPV4 = "best_ipv4.txt"
 OUT_IPV6 = "best_ipv6.txt"
 OUT_ALL  = "best_all.txt"
 
-PROGRESS_EVERY = 100  # 每 N 个更新一次进度
+PROGRESS_EVERY = 100
 
 
 @dataclass
@@ -136,6 +136,18 @@ async def test_ip(ip: str, timeout: float = 5.0) -> Result:
     return Result(ip=ip, colo=colo, loc=loc, latency_ms=latency_ms, http_code=http_code)
 
 
+def _format_progress(done: int, total: int, ok_cnt: int, elapsed: float) -> str:
+    """格式化一行进度信息"""
+    pct = done * 100 // total
+    bar_len = 20
+    filled = pct * bar_len // 100
+    bar = "█" * filled + "░" * (bar_len - filled)
+    eta = elapsed / done * (total - done) if done > 0 else 0
+    return (f"[{done}/{total}] {bar} {pct:>3}%  "
+            f"✅{ok_cnt} ❌{done - ok_cnt}  "
+            f"⏱{elapsed:.0f}s ETA{eta:.0f}s")
+
+
 async def run_tests(ips: list[str], concurrency: int = 50, timeout: float = 5.0) -> list[Result]:
     """并发测试，流式收集结果并实时显示进度和当前最优"""
     sem = asyncio.Semaphore(concurrency)
@@ -145,7 +157,8 @@ async def run_tests(ips: list[str], concurrency: int = 50, timeout: float = 5.0)
         async with sem:
             return await test_ip(ip, timeout)
 
-    print(f"🚀 开始测试 {total} 个 IP（并发={concurrency} 超时={timeout}s）...\n")
+    print(f"🚀 开始测试 {total} 个 IP（并发={concurrency} 超时={timeout}s）...")
+    print(f"⏳ 等待首批结果...")
 
     t0 = time.monotonic()
     tasks = [asyncio.ensure_future(bounded_test(ip)) for ip in ips]
@@ -162,36 +175,25 @@ async def run_tests(ips: list[str], concurrency: int = 50, timeout: float = 5.0)
         if r.error is None:
             ok_count += 1
 
-        # 每 N 个打印一次进度 + 当前 top 5
         if done_count >= next_milestone or done_count == total:
-            pct = done_count * 100 // total
-            bar_len = 20
-            filled = pct * bar_len // 100
-            bar = "█" * filled + "░" * (bar_len - filled)
             elapsed = time.monotonic() - t0
-            eta = elapsed / done_count * (total - done_count) if done_count > 0 else 0
+            prog = _format_progress(done_count, total, ok_count, elapsed)
 
             # 当前 top 5
             ok_results = sorted(
                 [x for x in results if x.error is None],
                 key=lambda x: x.latency_ms
             )[:5]
-            tops = " | ".join(
-                f"{r.latency_ms:.0f}ms({r.colo})" for r in ok_results
-            )
-
-            line = (f"\r[{done_count}/{total}] {bar} {pct}% "
-                    f"✅{ok_count} ❌{done_count-ok_count} "
-                    f"⏱{elapsed:.0f}s ETA{eta:.0f}s "
-                    f"| 🏆 {tops}")
-
-            sys.stdout.write(line.ljust(120))
-            sys.stdout.flush()
+            if ok_results:
+                tops = " | ".join(f"{r.latency_ms:.0f}ms({r.colo})" for r in ok_results)
+                print(f"  {prog}  🏆 {tops}", flush=True)
+            else:
+                print(f"  {prog}", flush=True)
 
             next_milestone = ((done_count // PROGRESS_EVERY) + 1) * PROGRESS_EVERY
 
     elapsed = time.monotonic() - t0
-    print(f"\n\n✅ 测试完成，耗时 {elapsed:.1f}s\n")
+    print(f"\n✅ 测试完成，耗时 {elapsed:.1f}s\n")
 
     results.sort(key=lambda r: (r.error is not None, r.latency_ms))
     return results
