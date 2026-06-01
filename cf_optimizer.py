@@ -2,10 +2,16 @@
 """
 Cloudflare IP Optimizer — 通过 https://cdnjs.cloudflare.com/cdn-cgi/trace 测试HTTPS延迟和 colo
 IP 列表全部来自外部文件：ipv4.txt / ipv6.txt
+输出四个文件：
+  results_full.txt  — 完整结果表（所有IP，含colo/loc/延迟/状态码）
+  best_ipv4.txt     — 最优 IPv4（每行一个IP）
+  best_ipv6.txt     — 最优 IPv6（每行一个IP）
+  best_all.txt      — 最优混合（每行一个IP）
 """
 
 import asyncio
 import ipaddress
+import os
 import re
 import time
 import argparse
@@ -18,6 +24,11 @@ TRACE_URL = f"https://{HOST}/cdn-cgi/trace"
 DEFAULT_IPV4 = "ipv4.txt"
 DEFAULT_IPV6 = "ipv6.txt"
 
+OUT_FULL   = "results_full.txt"
+OUT_IPV4   = "best_ipv4.txt"
+OUT_IPV6   = "best_ipv6.txt"
+OUT_ALL    = "best_all.txt"
+
 
 @dataclass
 class Result:
@@ -28,9 +39,11 @@ class Result:
     http_code: int
     error: Optional[str] = None
 
+    def is_v6(self) -> bool:
+        return ":" in self.ip
+
 
 def parse_trace(text: str) -> dict:
-    """将 trace 响应解析为 dict"""
     data = {}
     for line in text.strip().split("\n"):
         if "=" in line:
@@ -40,12 +53,7 @@ def parse_trace(text: str) -> dict:
 
 
 def load_ips(filepath: str) -> list[str]:
-    """
-    从文件加载 IP 列表。
-    - 单 IP → 直接使用
-    - CIDR (如 104.16.0.0/12) → 取该段第一个可用 IP
-    - 支持 # 注释和空行
-    """
+    """从文件加载 IP（支持单IP和 CIDR）"""
     ips = []
     with open(filepath) as f:
         for line in f:
@@ -55,16 +63,14 @@ def load_ips(filepath: str) -> list[str]:
             if "/" in line:
                 try:
                     net = ipaddress.ip_network(line, strict=False)
-                    # CIDR: 取第一个非网络地址的 IP
-                    hosts = net.hosts()
-                    first = next(hosts, None)
+                    first = next(net.hosts(), None)
                     if first:
                         ips.append(str(first))
                 except ValueError:
                     print(f"⚠️ 跳过无效 CIDR: {line}")
             else:
                 try:
-                    ipaddress.ip_address(line)  # 验证格式
+                    ipaddress.ip_address(line)
                     ips.append(line)
                 except ValueError:
                     print(f"⚠️ 跳过无效 IP: {line}")
@@ -72,11 +78,6 @@ def load_ips(filepath: str) -> list[str]:
 
 
 async def test_ip(ip: str, timeout: float = 5.0) -> Result:
-    """
-    使用 curl --resolve 向指定 IP 发起 HTTPS 请求，
-    测量HTTPS延迟并解析 colo / loc。
-    IPv6 地址自动用方括号包裹。
-    """
     if ":" in ip and ip[0] != "[":
         ip = f"[{ip}]"
 
@@ -126,7 +127,6 @@ async def test_ip(ip: str, timeout: float = 5.0) -> Result:
 
 
 async def run_tests(ips: list[str], concurrency: int = 20, timeout: float = 5.0) -> list[Result]:
-    """并发测试所有 IP，返回按延迟排序的结果列表"""
     sem = asyncio.Semaphore(concurrency)
 
     async def bounded_test(ip):
@@ -145,7 +145,6 @@ async def run_tests(ips: list[str], concurrency: int = 20, timeout: float = 5.0)
 
 
 def print_results(results: list[Result], top_n: int = 30):
-    """以表格格式打印结果"""
     ok = [r for r in results if r.error is None]
     err = [r for r in results if r.error is not None]
 
@@ -173,6 +172,54 @@ def print_results(results: list[Result], top_n: int = 30):
             print(f"   {colo:>6}  最低={min(lats):.1f}ms  平均={sum(lats)/len(lats):.1f}ms  (样本={len(lats)})")
 
 
+def write_outputs(results: list[Result], top_n: int, out_dir: str = "."):
+    """写入四个输出文件"""
+    ok = [r for r in results if r.error is None]
+    err = [r for r in results if r.error is not None]
+
+    v4 = [r for r in ok if not r.is_v6()]
+    v6 = [r for r in ok if r.is_v6()]
+
+    # 1) results_full.txt — 完整结果表
+    path_full = os.path.join(out_dir, OUT_FULL)
+    with open(path_full, "w") as f:
+        f.write(f"Cloudflare IP Optimizer — 完整测试结果\n")
+        f.write(f"测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"成功: {len(ok)} / 失败: {len(err)} / 总计: {len(results)}\n")
+        f.write(f"\n{'='*70}\n")
+        f.write(f"{'IP':<42} {'延迟':>8} {'Colo':>6} {'Loc':>5} {'状态码':>7}\n")
+        f.write(f"{'-'*70}\n")
+        for r in ok:
+            f.write(f"{r.ip:<42} {r.latency_ms:>7.1f}ms {r.colo:>6} {r.loc:>5} {r.http_code:>7}\n")
+        if err:
+            f.write(f"\n{'—'*40}\n")
+            f.write(f"失败: {len(err)} 个\n")
+            for r in err:
+                f.write(f"{r.ip:<42} {r.error}\n")
+    print(f"📄 {path_full}  ({len(ok)} 成功 + {len(err)} 失败)")
+
+    # 2) best_ipv4.txt — 最优 IPv4
+    path_v4 = os.path.join(out_dir, OUT_IPV4)
+    with open(path_v4, "w") as f:
+        for r in v4[:top_n]:
+            f.write(f"{r.ip}\n")
+    print(f"📄 {path_v4}  ({min(len(v4), top_n)} 个 IPv4)")
+
+    # 3) best_ipv6.txt — 最优 IPv6
+    path_v6 = os.path.join(out_dir, OUT_IPV6)
+    with open(path_v6, "w") as f:
+        for r in v6[:top_n]:
+            f.write(f"{r.ip}\n")
+    print(f"📄 {path_v6}  ({min(len(v6), top_n)} 个 IPv6)")
+
+    # 4) best_all.txt — 最优混合
+    path_all = os.path.join(out_dir, OUT_ALL)
+    with open(path_all, "w") as f:
+        for r in ok[:top_n]:
+            f.write(f"{r.ip}\n")
+    print(f"📄 {path_all}  ({min(len(ok), top_n)} 个混合)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Cloudflare IP Optimizer — 测试HTTPS延迟并筛选最优IP"
@@ -188,8 +235,9 @@ def main():
     parser.add_argument("-t", "--timeout", type=float, default=5.0,
                         help="超时秒数（默认 5）")
     parser.add_argument("-n", "--top", type=int, default=30,
-                        help="显示前 N 个最优结果")
-    parser.add_argument("--export", help="导出最优 IP 到文件")
+                        help="显示及导出的最优 IP 数量（默认 30）")
+    parser.add_argument("-o", "--out-dir", default=".",
+                        help="输出目录（默认当前目录）")
     parser.add_argument("--sort-by-colo", action="store_true",
                         help="按 colo 分组输出")
     args = parser.parse_args()
@@ -233,12 +281,9 @@ def main():
     else:
         print_results(results, args.top)
 
-    if args.export:
-        ok = [r for r in results if r.error is None]
-        with open(args.export, "w") as f:
-            for r in ok[:args.top]:
-                f.write(f"{r.ip}  # {r.colo} {r.latency_ms:.1f}ms\n")
-        print(f"\n📁 最优 IP 已导出到: {args.export}")
+    # 生成四个输出文件
+    print(f"\n📁 输出文件:")
+    write_outputs(results, args.top, args.out_dir)
 
 
 if __name__ == "__main__":
