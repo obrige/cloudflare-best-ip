@@ -2,8 +2,8 @@ name: Optimize IP
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # UTC 06:00 每天一次
-  workflow_dispatch:       # 手动触发
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
 
       - name: Run IP Optimizer
-        run: python cf_optimizer.py -c 30 -t 5 -n 100
+        run: python cf_optimizer.py -c 30 -t 3 -n 100 -p 1
 
       - name: Commit and push results
         run: |
