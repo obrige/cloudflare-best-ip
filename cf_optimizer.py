@@ -144,7 +144,7 @@ async def run_tests(ips: list[str], concurrency: int = 20, timeout: float = 5.0)
     return results
 
 
-def print_results(results: list[Result], top_n: int = 30):
+def print_results(results: list[Result], top_n: int = 100):
     ok = [r for r in results if r.error is None]
     err = [r for r in results if r.error is not None]
 
@@ -234,8 +234,8 @@ def main():
                         help="并发数（默认 20）")
     parser.add_argument("-t", "--timeout", type=float, default=5.0,
                         help="超时秒数（默认 5）")
-    parser.add_argument("-n", "--top", type=int, default=30,
-                        help="显示及导出的最优 IP 数量（默认 30）")
+    parser.add_argument("-n", "--top", type=int, default=100,
+                        help="显示及导出的最优 IP 数量（默认 100）")
     parser.add_argument("-o", "--out-dir", default=".",
                         help="输出目录（默认当前目录）")
     parser.add_argument("--sort-by-colo", action="store_true",
