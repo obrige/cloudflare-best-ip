@@ -75,7 +75,7 @@ python cf_optimizer.py -c 50 -t 3 -n 50 -o ./output
 | `--no-ipv6` | 跳过 IPv6 | - |
 | `-c` / `--concurrency` | 并发数量 | 20 |
 | `-t` / `--timeout` | 超时(秒) | 5 |
-| `-n` / `--top` | 最优 IP 数量 | 30 |
+| `-n` / `--top` | 最优 IP 数量 | 100 |
 | `-o` / `--out-dir` | 输出目录 | `.` |
 | `--sort-by-colo` | 按数据中心分组输出 | - |
 
@@ -102,9 +102,9 @@ IP                                          延迟    Colo    Loc    状态码
 
 📁 输出文件:
 📄 results_full.txt  (7980 成功 + 150 失败)
-📄 best_ipv4.txt     (30 个 IPv4)
-📄 best_ipv6.txt     (30 个 IPv6)
-📄 best_all.txt      (30 个混合)
+📄 best_ipv4.txt     (100 个 IPv4)
+📄 best_ipv6.txt     (100 个 IPv6)
+📄 best_all.txt      (100 个混合)
 ```
 
 ## 自定义 IP 列表
