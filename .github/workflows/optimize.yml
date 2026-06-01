@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
 
       - name: Run IP Optimizer
-        run: python cf_optimizer.py -c 30 -t 5
+        run: python cf_optimizer.py -c 30 -t 5 -n 100
 
       - name: Commit and push results
         run: |
