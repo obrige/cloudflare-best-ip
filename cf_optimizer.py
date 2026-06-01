@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cloudflare IP Optimizer — 通过 https://cdnjs.cloudflare.com/cdn-cgi/trace 测试延迟和 colo
+Cloudflare IP Optimizer — 通过 https://cdnjs.cloudflare.com/cdn-cgi/trace 测试HTTPS延迟和 colo
 """
 
 import asyncio
@@ -15,10 +15,14 @@ from typing import Optional
 HOST = "cdnjs.cloudflare.com"
 TRACE_URL = f"https://{HOST}/cdn-cgi/trace"
 
-# Cloudflare 常用 IP 段
+# Cloudflare 常用 IP 段（IPv4 + IPv6）
 DEFAULT_IP_RANGES = [
+    # IPv4
     "104.16.0.0/12",
     "104.64.0.0/10",
+    # IPv6
+    "2606:4700::/44",
+    "2400:cb00::/32",
 ]
 
 
@@ -45,8 +49,13 @@ def parse_trace(text: str) -> dict:
 async def test_ip(ip: str, timeout: float = 5.0) -> Result:
     """
     使用 curl --resolve 向指定 IP 发起 HTTPS 请求，
-    测量耗时并解析 colo / loc。
+    测量HTTPS延迟并解析 colo / loc。
+    IPv6 地址自动用方括号包裹。
     """
+    # IPv6 自动加方括号
+    if ":" in ip and ip[0] != "[":
+        ip = f"[{ip}]"
+
     cmd = [
         "curl", "-s",
         "--resolve", f"{HOST}:443:{ip}",
@@ -117,18 +126,18 @@ def print_results(results: list[Result], top_n: int = 30):
     ok = [r for r in results if r.error is None]
     err = [r for r in results if r.error is not None]
 
-    print(f"{'='*65}")
-    print(f"{'IP':<18} {'延迟':>8} {'Colo':>6} {'Loc':>5} {'状态码':>7}")
-    print(f"{'-'*65}")
+    print(f"{'='*70}")
+    print(f"{'IP':<42} {'延迟':>8} {'Colo':>6} {'Loc':>5} {'状态码':>7}")
+    print(f"{'-'*70}")
 
     for r in ok[:top_n]:
-        print(f"{r.ip:<18} {r.latency_ms:>7.1f}ms {r.colo:>6} {r.loc:>5} {r.http_code:>7}")
+        print(f"{r.ip:<42} {r.latency_ms:>7.1f}ms {r.colo:>6} {r.loc:>5} {r.http_code:>7}")
 
     if err:
         print(f"\n{'—'*40}")
         print(f"❌ 失败: {len(err)} 个")
         for r in err[:10]:
-            print(f"   {r.ip:<18} {r.error}")
+            print(f"   {r.ip:<42} {r.error}")
 
     print(f"\n总计: {len(ok)} 成功 / {len(err)} 失败")
 
@@ -142,7 +151,7 @@ def print_results(results: list[Result], top_n: int = 30):
 
 
 def generate_ips_from_ranges(ranges: list[str], per_range: int = 3) -> list[str]:
-    """从 CIDR 段中每段抽取若干个 IP"""
+    """从 CIDR 段中每段抽取若干个 IP（支持 IPv4/IPv6）"""
     import ipaddress
     ips = []
     for r in ranges:
@@ -162,12 +171,12 @@ def load_ips(filepath: str) -> list[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Cloudflare IP 优选工具")
+    parser = argparse.ArgumentParser(description="Cloudflare IP 优选工具 — 测试HTTPS延迟并筛选最优IP")
     parser.add_argument("-f", "--file", default="ips.txt", help="IP 列表文件（每行一个IP）")
     parser.add_argument("-c", "--concurrency", type=int, default=20, help="并发数（默认 20）")
     parser.add_argument("-t", "--timeout", type=float, default=5.0, help="超时秒数（默认 5）")
     parser.add_argument("-n", "--top", type=int, default=30, help="显示前 N 个最优结果")
-    parser.add_argument("--generate", action="store_true", help="使用内置 IP 段生成测试列表")
+    parser.add_argument("--generate", action="store_true", help="使用内置 IPv4/IPv6 段生成测试列表")
     parser.add_argument("--per-range", type=int, default=3, help="每段抽取 IP 数（配合 --generate）")
     parser.add_argument("--export", help="导出最优 IP 到文件")
     parser.add_argument("--sort-by-colo", action="store_true", help="按 colo 分组输出")
@@ -198,7 +207,7 @@ def main():
         for colo in sorted(colo_groups):
             print(f"\n--- {colo} ---")
             for r in sorted(colo_groups[colo], key=lambda x: x.latency_ms)[:5]:
-                print(f"  {r.ip:<18} {r.latency_ms:.1f}ms")
+                print(f"  {r.ip:<42} {r.latency_ms:.1f}ms")
     else:
         print_results(results, args.top)
 
