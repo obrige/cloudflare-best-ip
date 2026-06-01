@@ -2,16 +2,14 @@
 """
 Cloudflare IP Optimizer — 通过 https://cdnjs.cloudflare.com/cdn-cgi/trace 测试HTTPS延迟和 colo
 IP 列表全部来自外部文件：ipv4.txt / ipv6.txt
-输出四个文件到 results/ 目录：
-  results_full.txt  — 完整结果表（所有IP，含colo/loc/延迟/状态码）
-  best_ipv4.txt     — 最优 IPv4（每行一个IP）
-  best_ipv6.txt     — 最优 IPv6（每行一个IP）
-  best_all.txt      — 最优混合（每行一个IP）
+CIDR 段随机抽取 per_range 个 IP
+输出四个文件到 results/ 目录
 """
 
 import asyncio
 import ipaddress
 import os
+import random
 import re
 import time
 import argparse
@@ -25,10 +23,10 @@ DEFAULT_IPV4 = "ipv4.txt"
 DEFAULT_IPV6 = "ipv6.txt"
 DEFAULT_OUT_DIR = "results"
 
-OUT_FULL   = "results_full.txt"
-OUT_IPV4   = "best_ipv4.txt"
-OUT_IPV6   = "best_ipv6.txt"
-OUT_ALL    = "best_all.txt"
+OUT_FULL = "results_full.txt"
+OUT_IPV4 = "best_ipv4.txt"
+OUT_IPV6 = "best_ipv6.txt"
+OUT_ALL  = "best_all.txt"
 
 
 @dataclass
@@ -53,8 +51,21 @@ def parse_trace(text: str) -> dict:
     return data
 
 
-def load_ips(filepath: str) -> list[str]:
-    """从文件加载 IP（支持单IP和 CIDR）"""
+def _random_ip_from_net(net: ipaddress.IPv4Network | ipaddress.IPv6Network) -> str:
+    """从 CIDR 网络中随机选一个可用主机 IP（不枚举所有主机）"""
+    num_hosts = net.num_addresses
+    # 跳过网络地址(0)和广播地址(-1，仅IPv4)
+    if net.version == 4 and num_hosts >= 2:
+        offset = random.randint(1, num_hosts - 2)
+    elif num_hosts >= 2:
+        offset = random.randint(1, num_hosts - 1)
+    else:
+        offset = 0
+    return str(net[offset])
+
+
+def load_ips(filepath: str, per_range: int = 1) -> list[str]:
+    """从文件加载 IP（单IP 直用，CIDR 随机抽取 per_range 个）"""
     ips = []
     with open(filepath) as f:
         for line in f:
@@ -64,9 +75,8 @@ def load_ips(filepath: str) -> list[str]:
             if "/" in line:
                 try:
                     net = ipaddress.ip_network(line, strict=False)
-                    first = next(net.hosts(), None)
-                    if first:
-                        ips.append(str(first))
+                    for _ in range(per_range):
+                        ips.append(_random_ip_from_net(net))
                 except ValueError:
                     print(f"⚠️ 跳过无效 CIDR: {line}")
             else:
@@ -127,7 +137,7 @@ async def test_ip(ip: str, timeout: float = 5.0) -> Result:
     return Result(ip=ip, colo=colo, loc=loc, latency_ms=latency_ms, http_code=http_code)
 
 
-async def run_tests(ips: list[str], concurrency: int = 20, timeout: float = 5.0) -> list[Result]:
+async def run_tests(ips: list[str], concurrency: int = 50, timeout: float = 5.0) -> list[Result]:
     sem = asyncio.Semaphore(concurrency)
 
     async def bounded_test(ip):
@@ -174,7 +184,6 @@ def print_results(results: list[Result], top_n: int = 100):
 
 
 def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
-    """写入四个输出文件到 out_dir"""
     os.makedirs(out_dir, exist_ok=True)
     ok = [r for r in results if r.error is None]
     err = [r for r in results if r.error is not None]
@@ -182,7 +191,7 @@ def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
     v4 = [r for r in ok if not r.is_v6()]
     v6 = [r for r in ok if r.is_v6()]
 
-    # 1) results_full.txt — 完整结果表
+    # 1) results_full.txt
     path_full = os.path.join(out_dir, OUT_FULL)
     with open(path_full, "w") as f:
         f.write(f"Cloudflare IP Optimizer — 完整测试结果\n")
@@ -200,21 +209,21 @@ def write_outputs(results: list[Result], top_n: int, out_dir: str = "results"):
                 f.write(f"{r.ip:<42} {r.error}\n")
     print(f"📄 {path_full}  ({len(ok)} 成功 + {len(err)} 失败)")
 
-    # 2) best_ipv4.txt — 最优 IPv4
+    # 2) best_ipv4.txt
     path_v4 = os.path.join(out_dir, OUT_IPV4)
     with open(path_v4, "w") as f:
         for r in v4[:top_n]:
             f.write(f"{r.ip}\n")
     print(f"📄 {path_v4}  ({min(len(v4), top_n)} 个 IPv4)")
 
-    # 3) best_ipv6.txt — 最优 IPv6
+    # 3) best_ipv6.txt
     path_v6 = os.path.join(out_dir, OUT_IPV6)
     with open(path_v6, "w") as f:
         for r in v6[:top_n]:
             f.write(f"{r.ip}\n")
     print(f"📄 {path_v6}  ({min(len(v6), top_n)} 个 IPv6)")
 
-    # 4) best_all.txt — 最优混合
+    # 4) best_all.txt
     path_all = os.path.join(out_dir, OUT_ALL)
     with open(path_all, "w") as f:
         for r in ok[:top_n]:
@@ -232,12 +241,14 @@ def main():
                         help=f"IPv6 列表文件 (默认 {DEFAULT_IPV6})")
     parser.add_argument("--no-ipv4", action="store_true", help="跳过 IPv4")
     parser.add_argument("--no-ipv6", action="store_true", help="跳过 IPv6")
-    parser.add_argument("-c", "--concurrency", type=int, default=20,
-                        help="并发数（默认 20）")
+    parser.add_argument("-c", "--concurrency", type=int, default=50,
+                        help="并发数（默认 50）")
     parser.add_argument("-t", "--timeout", type=float, default=5.0,
                         help="超时秒数（默认 5）")
     parser.add_argument("-n", "--top", type=int, default=100,
                         help="显示及导出的最优 IP 数量（默认 100）")
+    parser.add_argument("-p", "--per-range", type=int, default=1,
+                        help="每个 CIDR 段随机抽取 IP 数（默认 1）")
     parser.add_argument("-o", "--out-dir", default=DEFAULT_OUT_DIR,
                         help=f"输出目录（默认 {DEFAULT_OUT_DIR}/）")
     parser.add_argument("--sort-by-colo", action="store_true",
@@ -249,16 +260,16 @@ def main():
 
     if not args.no_ipv4:
         try:
-            v4 = load_ips(args.ipv4)
+            v4 = load_ips(args.ipv4, args.per_range)
             ips += v4
-            sources.append(f"{args.ipv4} ({len(v4)} 个)")
+            sources.append(f"{args.ipv4} ({len(v4)} 个, 每段抽{args.per_range})")
         except FileNotFoundError:
             print(f"⚠️ {args.ipv4} 不存在，跳过 IPv4")
     if not args.no_ipv6:
         try:
-            v6 = load_ips(args.ipv6)
+            v6 = load_ips(args.ipv6, args.per_range)
             ips += v6
-            sources.append(f"{args.ipv6} ({len(v6)} 个)")
+            sources.append(f"{args.ipv6} ({len(v6)} 个, 每段抽{args.per_range})")
         except FileNotFoundError:
             print(f"⚠️ {args.ipv6} 不存在，跳过 IPv6")
 
@@ -283,7 +294,6 @@ def main():
     else:
         print_results(results, args.top)
 
-    # 生成四个输出文件
     print(f"\n📁 输出文件 -> {args.out_dir}/ :")
     write_outputs(results, args.top, args.out_dir)
 
